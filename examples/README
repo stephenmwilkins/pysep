@@ -1,0 +1,10 @@
+
+
+
+create_test_data.py # code for creating test data from the XDF. w
+
+open_image.py # shows how to load an image and create a cutout
+
+test_singleimage.py # source detection on a single image
+
+survey.py # a full survey walkthrough

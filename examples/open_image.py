@@ -2,39 +2,38 @@
 
 import os
 import sys
+import numpy as np
+
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-
-import FLARE.surveys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
 import pysep.utils
 import pysep.plots.image
 
+# --- in this example we make an image object and plot it
+
+filename = 'data/test/f160w'
 
 
-survey_name, field_name = 'XDF', 'dXDF'
-
-field = FLARE.surveys.surveys[survey_name].fields[field_name]
-
-f = field.filters[-1] # final filter
+# --- create the Image object. The Image object contains the science and weight arrays and can be easily masked
+img = pysep.utils.ImageFromFITS(filename)
 
 
 
-img = pysep.utils.image_from_field(f, field, verbose = True)
+# --- display the science, weight, and S/N images
+pysep.plots.image.make_flux_plot(img) # plot science image with linear scaling
+pysep.plots.image.make_flux_plot(img, scaling = np.log10) # plot science image with log10 scaling
+pysep.plots.image.make_flux_plot(img, scaling = np.arcsinh) # plot science image with arcsinh scaling
+
+pysep.plots.image.make_flux_plot(img, ext = 'wht') # plot weight image
+
+pysep.plots.image.make_significance_plot(img) # make nice significance image. Here the greyscale denotes pixels S/N<2 while the colour scale denotes pixels S/N>2
 
 
-# plt.imshow(img.sci)
-# plt.show()
-#
-# plt.imshow(img.wht)
-# plt.show()
-#
-# plt.imshow(img.mask)
-# plt.show()
+# --- make a new image from a cutout of another image
+cutout = img.make_cutout(100, 100, 100)
 
-
-cutout = img.make_cutout(2000, 2000,500)
-
-pysep.plots.image.make_significance_plot(cutout)
+pysep.plots.image.make_flux_plot(cutout) # --- plot the cutout science image # TODO: add better scaling
+plt.show()

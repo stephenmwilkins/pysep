@@ -8,8 +8,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-import FLARE.plt as fplt
-
+import flare.plt as fplt
+import flare.plots.image
 
 
 def default_plot():
@@ -35,6 +35,18 @@ class Analyser:
         self.save_plots = save_plots
 
         self.cat = h5py.File(cat_file, 'r')
+
+        self.highz_ids = np.where(self.cat['selected'])[0]
+
+        print(f'Number of selected galaxies: {len(self.highz_ids)}')
+
+        flux = self.cat['Hubble.WFC3.f160w/segment_flux']
+
+        print(np.min(flux), np.median(flux), np.max(flux))
+
+
+
+
 
         # self.plot_dir = f'{output_dir}/{output_filename}'
         #
@@ -87,3 +99,6 @@ class Analyser:
 
         if self.show_plots:
             plt.show()
+
+
+    # def make_(self):

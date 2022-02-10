@@ -15,12 +15,13 @@ import pysep.plots.image
 
 # --- cutout a region of the HUDF to use as test data
 
+# THIS NO LONGER WORKS 
 
 survey_name, field_name = 'XDF', 'dXDF'
 
-field = FLARE.surveys.surveys[survey_name].fields[field_name]
-
-imgs = pysep.utils.images_from_field(field, verbose = True, sci_suffix = 'sci_convolved')
+# field = FLARE.surveys.surveys[survey_name].fields[field_name]
+#
+# imgs = pysep.utils.images_from_field(field, verbose = True, sci_suffix = 'sci_convolved')
 
 cutouts = {f: img.make_cutout(2000, 2000, 500) for f, img in imgs.items()}
 
@@ -28,7 +29,7 @@ for filter, cutout in cutouts.items():
 
     f = filter.split('.')[-1]
 
-    cutout.write_to_fits(f'test_data/{f}_')
+    cutout.write_to_fits(f'data/test/{f}_')
 
 
 pysep.plots.image.make_flux_plots(cutouts)

@@ -7,8 +7,8 @@ from astropy.io import fits
 # from photutils import CircularAperture
 # from photutils import aperture_photometry
 
-import FLARE
-import FLARE.observatories
+import flare
+import flare.observatories
 
 class empty: pass
 
@@ -49,8 +49,7 @@ def make_cutout(data, x, y, width):
 
 
 
-
-
+# --- this is the Image class which is extensively used
 
 class Image:
 
@@ -157,62 +156,68 @@ class Image:
 
 
 
-def images_from_field(field, filters = None, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
-
-    # --- uses a FLARE.surveys field object to set the relevant parameters
-
-    if field.mask_file:
-        mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
-    else:
-        mask = None
-
-    if not filters:
-        filters = field.filters
-
-    return {filter: ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix) for filter in filters}
 
 
+# --- designed to work with Steve's FLARE module. Omitted here.
+# def images_from_field(field, filters = None, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
+#
+#     # --- uses a flare.surveys field object to set the relevant parameters
+#
+#     if field.mask_file:
+#         mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
+#     else:
+#         mask = None
+#
+#     if not filters:
+#         filters = field.filters
+#
+#     return {filter: ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix) for filter in filters}
 
 
-def image_from_field(filter, field, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
 
-    # --- uses a FLARE.surveys field object to set the relevant parameters
+# --- designed to work with Steve's FLARE module. Omitted here.
+# def image_from_field(filter, field, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
+#
+#     # --- uses a flare.surveys field object to set the relevant parameters
+#
+#     if field.mask_file:
+#         mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
+#     else:
+#         mask = None
+#
+#     return ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix)
 
-    if field.mask_file:
-        mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
-    else:
-        mask = None
-
-    return ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix)
 
 
-class ImageFromFile(Image):
+# --- this class is used to read in an image from a FITS file
 
-    def __init__(self, data_dir, filter, mask = None, pixel_scale = 0.06, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
+class ImageFromFITS(Image):
+
+    def __init__(self, filename, filter = None, mask = None, pixel_scale = 0.06, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht', zeropoint = None, nJy_to_es = None):
 
         """generate instance of image class from file"""
-
-        if verbose:
-            print('-'*40)
-            print(f'filter: {filter}')
-            print(f'reading image from: {data_dir}')
-
-
-        f = filter.split('.')[-1]
 
         self.verbose = verbose
 
         self.filter = filter
         self.pixel_scale = pixel_scale
 
-        self.sci = fits.getdata(f'{data_dir}/{f}_{sci_suffix}.fits')
-        self.wht = fits.getdata(f'{data_dir}/{f}_{wht_suffix}.fits')
+        # self.sci = fits.getdata(f'{data_dir}/{f}_{sci_suffix}.fits')
+        # self.wht = fits.getdata(f'{data_dir}/{f}_{wht_suffix}.fits')
 
-        if filter in FLARE.observatories.filter_info.keys():
-            self.zeropoint = FLARE.observatories.filter_info[filter]['zeropoint'] # AB magnitude zeropoint
-            self.nJy_to_es = FLARE.observatories.filter_info[filter]['nJy_to_es'] # conversion from nJy to e/s
-        else:
-            self.zeropoint = self.nJy_to_es = None
+        self.sci = fits.getdata(f'{filename}_{sci_suffix}.fits')
+        self.wht = fits.getdata(f'{filename}_{wht_suffix}.fits')
+
+
+        # --- define image zeropoint and/or conversion from nJy to electrons per second
+
+        if (zeropoint is None) and (nJy_to_es is None): print('WARNING: no zeropoint set. This is needed for photometry.')
+
+        if zeropoint and (nJy_to_es is None):
+            nJy_to_es = 1E-9 * 10**(0.4*(zeropoint-8.9))
+
+        self.zeropoint = zeropoint # AB magnitude zeropoint
+        self.nJy_to_es = nJy_to_es # conversion from nJy to e/s
 
         self.mask = mask
 
@@ -230,6 +235,9 @@ class ImageFromFile(Image):
         self.noise = 1./np.sqrt(self.wht)
         # self.sig = self.sci/self.noise
 
+
+
+# --- this class is used to read in an image from a FITS file
 
 
 class ImageFromArrays(Image):
