@@ -8,8 +8,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-import flare.plt as fplt
-import flare.plots.image
+#import flare.plt as fplt
+#import flare.plots.image
 
 
 def default_plot():

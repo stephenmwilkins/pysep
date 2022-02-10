@@ -7,8 +7,8 @@ from astropy.io import fits
 # from photutils import CircularAperture
 # from photutils import aperture_photometry
 
-import flare
-import flare.observatories
+#import flare
+#import flare.observatories
 
 class empty: pass
 

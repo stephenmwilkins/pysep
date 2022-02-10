@@ -138,8 +138,30 @@ class SEP():
 
 
     # --- Export to Astropy tables
-    def export_to_table(self):
-        print('Sorry not yet implemented')
+    def export_to_table(self, output_dir = None, cat_name = 'cat', fmt = "fits"):
+        import astropy
+        from astropy.io import fits, ascii
+        from astropy.table import Table
+        #print('Sorry not yet implemented')
+        if self.verbose:
+            print('-'*20)
+            print('** Exporting to Astropy Table with format %s **' % fmt)
+            # --- print a list of all the output columns
+            for k in self.o.keys():
+                print(k)
+                
+        if (not output_dir) & (self.output_dir is not None):
+            output_dir = self.output_dir
+        if (not output_dir) & (not self.output_dir):
+            print('WARNING: No output directory set')
+            
+        t = Table([v for k,v in self.o.items() if k not in hdf5_exclude], names=[k for k,v in self.o.items() if k not in hdf5_exclude])
+        print(t)
+        print(t.info)
+        if fmt == "ascii":
+          ascii.write(t, f'{output_dir}/{cat_name}.dat', overwrite=True)
+        elif fmt == "fits":
+          t.write(f'{output_dir}/{cat_name}.fits', format='fits', overwrite=True)
 
     # --- Export to SExtractor file format.
     def export_to_SExtractor(self):

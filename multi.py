@@ -15,7 +15,7 @@ import pysep.analyse
 # --- read the test data. The test data is organised as: data/test/{f}_{image_type}.fits where f is the filter and image_type is e.g. sci, wht
 
 
-data_dir = 'data/test'
+data_dir = 'examples/data/test'
 
 filters = ['f435w','f606w','f775w','f814w','f850lp','f105w','f125w','f140w','f160w']
 
@@ -56,9 +56,9 @@ SEP.perform_photometry() # perform matched kron and segment photometry on all im
 
 
 # SEP.export_to_pickle(output_dir = data_dir) # dump output dictionary to Python pickle
-SEP.export_to_hdf5(output_dir = data_dir) # dump output dictionary to HDF5
+#SEP.export_to_hdf5(output_dir = data_dir) # dump output dictionary to HDF5
 # SEP.export_to_pandas(output_dir = data_dir) # dump output dictionary to Python pickle
-# SEP.export_to_table(output_dir = data_dir) # dump output dictionary to astropy table. NOT IMPLEMENTED
+SEP.export_to_table(output_dir = data_dir) # dump output dictionary to astropy table. NOT IMPLEMENTED
 # SEP.export_to_SExtractor(output_dir = data_dir) # dump output dictionary to SExtractor format. NOT IMPLEMENTED
 
 
