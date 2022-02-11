@@ -4,6 +4,8 @@ import sys
 
 import numpy as np
 import photutils
+from astropy.convolution import Gaussian2DKernel
+from astropy.stats import gaussian_fwhm_to_sigma
 
 import numpy as np
 
@@ -12,9 +14,15 @@ import numpy as np
 # --- default parameters
 default_parameters = {}
 default_parameters['kron_params'] = [2.5, 1]
-default_parameters['threshold'] = 2.5
 default_parameters['npixels'] = 5
 default_parameters['nlevels'] = 32
+default_parameters['nsigma'] = 2
+default_parameters['deblend_contrast'] = 0.001
+# default_parameters['smooth'] = False
+default_parameters['smooth'] = {'smooth_fwhm':2, 'kernel_size':5}
+
+
+
 
 # --- only output these columns for the individual bands. Most of the rest *should* be repitition from the detection image
 default_photometry_columns = ['kron_flux','kron_fluxerr','segment_flux','segment_fluxerr']
@@ -25,14 +33,30 @@ hdf5_exclude = ['detection/sky_centroid']
 
 def detect_sources(detection_image, parameters = default_parameters):
 
-    segm = photutils.detect_sources(detection_image.sn(), parameters['threshold'], npixels = parameters['npixels'])
-    segm_deblended = photutils.deblend_sources(detection_image.sn(), segm, npixels = parameters['npixels'], nlevels = parameters['nlevels'])
-    detection_cat = photutils.SourceCatalog(detection_image.sci, segm_deblended, error = detection_image.noise, kron_params = parameters['kron_params'])
+    if parameters['smooth']:
+        # --- not currently working
+        smooth_sigma = parameters['smooth']['smooth_fwhm'] * gaussian_fwhm_to_sigma
+        smooth_kernel = Gaussian2DKernel(smooth_sigma, x_size = parameters['smooth']['kernel_size'], y_size = parameters['smooth']['kernel_size'])
+        smooth_kernel.normalize()
+    else:
+        smooth_kernel = None
+
+    try:
+        detection_threshold = (parameters['nsigma'] * detection_image.background_map.background_rms) + detection_image.background_map.background # NOT CURRENTLY WORKING!!
+    except:
+        print('WARNING: Falling back to naive detection threshold')
+        detection_threshold = (1/np.sqrt(detection_image.wht)) * parameters['nsigma'] # --- naive approach
+
+    segm = photutils.detect_sources(detection_image.data, detection_threshold, npixels = parameters['npixels'], filter_kernel=smooth_kernel)
+
+    segm_deblended = photutils.deblend_sources(detection_image.data, segm, npixels = parameters['npixels'], nlevels = parameters['nlevels'], contrast = parameters['deblend_contrast'], filter_kernel = smooth_kernel)
+    detection_cat = photutils.SourceCatalog(detection_image.data, segm_deblended, error = detection_image.data_rms, kron_params = parameters['kron_params'])
 
     return detection_cat, segm_deblended
 
 
 def detect_sources_method(self):
+
 
     self.detection_cat, self.segm_deblended = detect_sources(self.detection_image, parameters = self.parameters)
 
@@ -58,7 +82,7 @@ def perform_photometry(detection_cat, segm_deblended, imgs, parameters = default
     """ Perform the standard photometry that photutils does """
     photometry_cat = {}
     for f, img in imgs.items():
-        photometry_cat[f] = photutils.SourceCatalog(img.sci, segm_deblended, error = img.noise, kron_params = parameters['kron_params'], detection_cat = detection_cat)
+        photometry_cat[f] = photutils.SourceCatalog(img.data, segm_deblended, error = img.data_rms, kron_params = parameters['kron_params'], detection_cat = detection_cat)
     return photometry_cat
 
 def perform_photometry_method(self, photometry_columns = default_photometry_columns):

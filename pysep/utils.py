@@ -4,11 +4,15 @@
 import numpy as np
 
 from astropy.io import fits
+
+from photutils import Background2D, MedianBackground
+
 # from photutils import CircularAperture
 # from photutils import aperture_photometry
 
-import flare
-import flare.observatories
+
+
+
 
 class empty: pass
 
@@ -53,39 +57,58 @@ def make_cutout(data, x, y, width):
 
 class Image:
 
+    def measure_background_and_rms(self):
+
+        self.measure_background_map()
+
+        self.background_rms = 1 / np.sqrt(self.wht)
+
+        if self.exposure_time:
+
+            self.exposure_time_map = self.exposure_time * self.background_map.background_rms_median**2 * self.wht
+
+            # effective gain parameter required to be positive everywhere (not zero), so adding small value 1e-8
+            self.data_rms = calc_total_error(self.data, self.background_rms, self.exposure_time_map+1e-8)
+
+        else:
+
+            print('WARNING: Using naive data_rms calculation')
+            self.data_rms = self.background_rms
+
+
 
     def sn(self):
 
-        return self.sci/self.noise
+        return self.data/self.data_rms
 
 
     def get_random_location(self):
 
         """get (single) random location on the image"""
 
-        pos = np.random.choice(self.sci.count())
-        return np.take((~self.sci.mask).nonzero(), pos, axis=1)
+        pos = np.random.choice(self.data.count())
+        return np.take((~self.data.mask).nonzero(), pos, axis=1)
 
     def get_random_locations(self, N):
 
         """get N random locations on the image"""
 
-        pos = np.random.choice(self.sci.count(), size=N)
-        return np.take((~self.sci.mask).nonzero(), pos, axis=1)
+        pos = np.random.choice(self.data.count(), size=N)
+        return np.take((~self.data.mask).nonzero(), pos, axis=1)
 
 
     def get_area(self):
 
         """calculated non-masked area in units of arcmin2"""
 
-        return self.sci.count()*self.pixel_scale**2/3600.
+        return self.data.count()*self.pixel_scale**2/3600.
 
 
-    def make_cutout(self, x, y, width):
+    def make_cutout(self, x, y, width, calculate_background = True):
 
         """extract cut out"""
 
-        sci = np.zeros((width, width))
+        data = np.zeros((width, width))
         wht = np.zeros((width, width))
 
         x = int(np.round(x, 0))
@@ -107,27 +130,27 @@ class Image:
         if ymin < 0:
             ystart = -ymin
             ymin = 0
-        if xmax > self.sci.shape[0]:
-            xend -= xmax - self.sci.shape[0]
-            xmax = self.sci.shape[0]
-        if ymax > self.sci.shape[1]:
-            yend -= ymax - self.sci.shape[1]
-            ymax = self.sci.shape[1]
+        if xmax > self.data.shape[0]:
+            xend -= xmax - self.data.shape[0]
+            xmax = self.data.shape[0]
+        if ymax > self.data.shape[1]:
+            yend -= ymax - self.data.shape[1]
+            ymax = self.data.shape[1]
 
 #         if self.verbose: print(xmin, xmax, ymin, ymax)
 #         if self.verbose: print(xstart, xend)
 #         if self.verbose: print(ystart, yend)
-#         if self.verbose: print(sci.shape)
-#         if self.verbose: print(self.sci[xmin:xmax,ymin:ymax].shape)
+#         if self.verbose: print(data.shape)
+#         if self.verbose: print(self.data[xmin:xmax,ymin:ymax].shape)
 
         if (width % 2) != 0:
             xmax += 1
             ymax += 1
 
-        sci[xstart:xend,ystart:yend] = self.sci[xmin:xmax,ymin:ymax]
+        data[xstart:xend,ystart:yend] = self.data[xmin:xmax,ymin:ymax]
         wht[xstart:xend,ystart:yend] = self.wht[xmin:xmax,ymin:ymax]
 
-        return ImageFromArrays(sci, wht, self.pixel_scale, zeropoint = self.zeropoint, nJy_to_es = self.nJy_to_es, verbose = self.verbose)
+        return ImageFromArrays(data, wht, self.pixel_scale, zeropoint = self.zeropoint, nJy_to_es = self.nJy_to_es, verbose = self.verbose, calculate_background = calculate_background)
 
 
 
@@ -137,7 +160,7 @@ class Image:
 
         aperture_centres = tuple(self.get_random_locations(N).T)
         apertures = [CircularAperture(aperture_centres, r=r) for r in [(aperture_diameter_arcsec/self.pixel_scale)/2.]] # r in pixels
-        phot_table = aperture_photometry(self.sci, apertures)
+        phot_table = aperture_photometry(self.data, apertures)
         aperture_fluxes = phot_table['aperture_sum_0'].quantity
         negative_aperture_fluxes = aperture_fluxes[aperture_fluxes<0]
         return -np.percentile(negative_aperture_fluxes, 100.-68.3) * sigma
@@ -145,16 +168,21 @@ class Image:
 
     def write_to_fits(self, filename = 'temp/'):
 
-        sci_hdu = fits.PrimaryHDU(self.sci)
+        sci_hdu = fits.PrimaryHDU(self.data)
         sci_hdu.writeto(f'{filename}sci.fits')
 
         wht_hdu = fits.PrimaryHDU(self.wht)
         wht_hdu.writeto(f'{filename}wht.fits')
 
-        rms_hdu = fits.PrimaryHDU(self.noise)
-        rms_hdu.writeto(f'{filename}rms.fits')
+        rms_hdu = fits.PrimaryHDU(self.data_rms)
+        rms_hdu.writeto(f'{filename}data_rms.fits')
 
 
+    def measure_background_map(self, bkg_size=50, filter_size=3, verbose=True):
+        # Calculate sigma-clipped background in cells of 50x50 pixels, then median filter over 3x3 cells
+        # For best results, the image should span an integer number of cells in both dimensions (here, 1000=20x50 pixels)
+        # https://photutils.readthedocs.io/en/stable/background.html
+        self.background_map = Background2D(self.data, bkg_size, filter_size = filter_size)
 
 
 
@@ -193,11 +221,13 @@ class Image:
 
 class ImageFromFITS(Image):
 
-    def __init__(self, filename, filter = None, mask = None, pixel_scale = 0.06, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht', zeropoint = None, nJy_to_es = None):
+    def __init__(self, filename, filter = None, mask = None, pixel_scale = 0.06, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht', zeropoint = None, nJy_to_es = None, exposure_time = None):
 
         """generate instance of image class from file"""
 
         self.verbose = verbose
+
+        self.exposure_time = exposure_time
 
         self.filter = filter
         self.pixel_scale = pixel_scale
@@ -205,7 +235,7 @@ class ImageFromFITS(Image):
         # self.sci = fits.getdata(f'{data_dir}/{f}_{sci_suffix}.fits')
         # self.wht = fits.getdata(f'{data_dir}/{f}_{wht_suffix}.fits')
 
-        self.sci = fits.getdata(f'{filename}_{sci_suffix}.fits')
+        self.data = fits.getdata(f'{filename}_{sci_suffix}.fits')
         self.wht = fits.getdata(f'{filename}_{wht_suffix}.fits')
 
 
@@ -226,14 +256,13 @@ class ImageFromFITS(Image):
         else:
             self.mask = (self.wht == 0)
 
-        self.sci = np.ma.masked_array(self.sci, mask = self.mask)
+        self.data = np.ma.masked_array(self.data, mask = self.mask)
         self.wht = np.ma.masked_array(self.wht, mask = self.mask)
 
         if verbose:
-            print(f'shape: ', self.sci.shape)
+            print(f'shape: ', self.data.shape)
 
-        self.noise = 1./np.sqrt(self.wht)
-        # self.sig = self.sci/self.noise
+        self.measure_background_and_rms()
 
 
 
@@ -242,20 +271,25 @@ class ImageFromFITS(Image):
 
 class ImageFromArrays(Image):
 
-    def __init__(self, sci, wht, pixel_scale, zeropoint = False, nJy_to_es = False,  verbose = False):
+    def __init__(self, data, wht, pixel_scale, zeropoint = False, nJy_to_es = False,  verbose = False, exposure_time = None, calculate_background = True):
 
         """generate instance of image class from cutout"""
 
         self.verbose = verbose
 
+        self.exposure_time = exposure_time
+
         self.pixel_scale = pixel_scale
         self.zeropoint = zeropoint # AB magnitude zeropoint
         self.nJy_to_es = nJy_to_es # conversion from nJy to e/s
 
-        self.sci = sci
+        self.data = data
         self.wht = wht
-        self.noise = 1./np.sqrt(self.wht)
-        # self.sig = self.sci/self.noise
+
+        if calculate_background:
+            self.measure_background_and_rms()
+
+
 
 
 
@@ -263,14 +297,14 @@ def create_stack(imgs):
 
     first_img = next(iter(imgs.values()))
 
-    shape = first_img.sci.shape
-    sci = np.zeros(shape)
+    shape = first_img.data.shape
+    data = np.zeros(shape)
     wht = np.zeros(shape)
 
     for filter, img in imgs.items():
-        sci += img.sci * img.wht
+        data += img.data * img.wht
         wht += img.wht
 
-    sci /= wht
+    data /= wht
 
-    return ImageFromArrays(sci, wht, first_img.pixel_scale)
+    return ImageFromArrays(data, wht, first_img.pixel_scale)

@@ -7,13 +7,13 @@ import matplotlib.cm as cm
 
 
 
-def make_flux_plot(img, vmin = None, vmax = None, ext = 'sci', scaling = False, cmap = cm.magma):
+def make_flux_plot(img, vmin = None, vmax = None, ext = 'data', scaling = False, cmap = cm.magma):
 
 
     fig, ax = plt.subplots(1, 1, figsize = (4,4))
     plt.subplots_adjust(left=0, top=1, bottom=0, right=1, wspace=0.01, hspace=0.0)
 
-    if ext == 'sci': im_ = img.sci
+    if ext == 'data': im_ = img.data
     if ext == 'wht': im_ = img.wht
 
     if scaling:
@@ -45,12 +45,12 @@ def make_flux_plots(imgs, vmin = 0, vmax = None, show = True):
     filters = list(imgs.keys())
 
     if not vmax:
-        vmax = np.max([np.max(imgs[f].sci) for f in filters])
+        vmax = np.max([np.max(imgs[f].data) for f in filters])
 
     for ax, f in zip(axes, filters):
         img = imgs[f]
         ax.set_axis_off()
-        ax.imshow(img.sci, cmap = cm.magma, vmin = vmin, vmax = vmax, origin = 'lower')
+        ax.imshow(img.data, cmap = cm.magma, vmin = vmin, vmax = vmax, origin = 'lower')
 
     plt.show()
     plt.close(fig)
@@ -60,7 +60,7 @@ def make_flux_plots(imgs, vmin = 0, vmax = None, show = True):
 
 def make_significance_panel(ax, img, threshold = 2.5):
 
-    sig = (img.sci/img.noise)
+    sig = (img.data/img.data_rms)
 
     ax.imshow(sig, cmap = cm.Greys, vmin = -5.0, vmax = 5.0, origin = 'lower')
     ax.imshow(np.ma.masked_where(sig <= threshold, sig), cmap = cm.plasma, vmin = threshold, vmax = 100, origin = 'lower')
@@ -148,4 +148,26 @@ def make_significance_segm_plot(img, segm, threshold = 2.5, save_file = None, sh
 
     if show:
         plt.show()
+    plt.close(fig)
+
+
+
+
+def make_rgb_image(r, g, b, Q=5, stretch=0.02, show = True, save = False, imsize = 3):
+
+
+    from astropy.visualization import make_lupton_rgb
+
+    fig, ax = plt.subplots(1, 1, figsize = (imsize,imsize))
+
+    plt.subplots_adjust(left=0, top=1, bottom=0, right=1, wspace=0.0, hspace=0.0)
+
+    # rgb_image = make_lupton_rgb(r, g, b, Q=5, stretch=0.02)
+    # rgb_image = make_lupton_rgb(r, g, b)
+
+    ax.imshow(np.array([r,g,b]).T)
+
+    if show:
+        plt.show()
+
     plt.close(fig)
