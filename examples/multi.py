@@ -23,8 +23,8 @@ parameters['nlevels'] = 32
 parameters['nsigma'] = 2
 parameters['deblend_contrast'] = 0.001
 
-# parameters['smooth'] = False
-parameters['smooth'] = {'smooth_fwhm':2, 'kernel_size':5}
+parameters['smooth'] = False
+# parameters['smooth'] = {'smooth_fwhm':2, 'kernel_size':5}
 
 
 
@@ -35,10 +35,10 @@ filters = ['f435w','f606w','f775w','f814w','f850lp','f105w','f125w','f140w','f16
 zeropoints = {'f105w': 26.269, 'f125w': 26.230, 'f140w': 26.452, 'f160w': 25.946, 'f435w': 25.684, 'f606w': 26.505, 'f775w': 25.678, 'f814w': 25.959, 'f850lp': 24.867}
 
 
-filename = lambda f: f'{data_dir}/{f}' # define a function that gives the full filename for different filters
+filename = lambda f, ext: f'{data_dir}/{f}_{ext}' # define a function that gives the full filename for different filters
 
 # --- create a dictionary of images
-imgs = {f: pysep.utils.ImageFromFITS(filename(f), zeropoint = zeropoints[f]) for f in filters}
+imgs = {f: pysep.utils.ImageFromFITS(filename(f,'sci'), filename(f,'wht'), zeropoint = zeropoints[f]) for f in filters}
 
 # pysep.plots.image.make_significance_plots(imgs) # make a nice S/N plot of all filters
 
@@ -52,19 +52,19 @@ detection_image = imgs['f160w'] # simply use the f160w band
 # detection_filters = ['f105w','f125w','f140w','f160w'] # all WFC3 images
 # detection_image = pysep.utils.create_stack({f:imgs[f] for f in detection_filters})
 
-# pysep.plots.image.make_significance_plot(detection_image) # plot significance map
+pysep.plots.image.make_significance_plot(detection_image) # plot significance map
 
 
 
 # --- initialise SEP, this keeps everything together and provides handy output methods
 
-SEP = sep.SEP(detection_image, imgs, verbose = True, parameters = parameters) # you could at this point change the default parameters
+SEP = sep.SEP(verbose = True, parameters = parameters) # you could at this point change the default parameters
 
-SEP.detect_sources() # detect sources
+SEP.detect_sources(detection_image) # detect sources
 
 # pysep.plots.image.make_segm_plot(SEP.segm_deblended) # plot segmentation map
 
-SEP.perform_photometry() # perform matched kron and segment photometry on all images using positions and apertures based on the detection images
+SEP.perform_photometry(imgs) # perform matched kron and segment photometry on all images using positions and apertures based on the detection images
 
 
 # SEP.export_to_pickle(output_dir = data_dir) # dump output dictionary to Python pickle

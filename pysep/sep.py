@@ -1,6 +1,7 @@
 
 import os
 import sys
+import warnings
 
 import numpy as np
 import photutils
@@ -31,10 +32,9 @@ default_photometry_columns = ['kron_flux','kron_fluxerr','segment_flux','segment
 # --- columns to exclude from the hdf5 file because they're not 1D arrays
 hdf5_exclude = ['detection/sky_centroid']
 
-def detect_sources(detection_image, parameters = default_parameters):
+def detect_sources(detection_image, parameters = default_parameters, naive_threshold = False):
 
     if parameters['smooth']:
-        # --- not currently working
         smooth_sigma = parameters['smooth']['smooth_fwhm'] * gaussian_fwhm_to_sigma
         smooth_kernel = Gaussian2DKernel(smooth_sigma, x_size = parameters['smooth']['kernel_size'], y_size = parameters['smooth']['kernel_size'])
         smooth_kernel.normalize()
@@ -44,7 +44,7 @@ def detect_sources(detection_image, parameters = default_parameters):
     try:
         detection_threshold = (parameters['nsigma'] * detection_image.background_map.background_rms) + detection_image.background_map.background # NOT CURRENTLY WORKING!!
     except:
-        print('WARNING: Falling back to naive detection threshold')
+        warnings.warn('Falling back to naive detection threshold')
         detection_threshold = (1/np.sqrt(detection_image.wht)) * parameters['nsigma'] # --- naive approach
 
     segm = photutils.detect_sources(detection_image.data, detection_threshold, npixels = parameters['npixels'], filter_kernel=smooth_kernel)
@@ -55,8 +55,9 @@ def detect_sources(detection_image, parameters = default_parameters):
     return detection_cat, segm_deblended
 
 
-def detect_sources_method(self):
+def detect_sources_method(self, detection_image):
 
+    self.detection_image = detection_image
 
     self.detection_cat, self.segm_deblended = detect_sources(self.detection_image, parameters = self.parameters)
 
@@ -85,7 +86,9 @@ def perform_photometry(detection_cat, segm_deblended, imgs, parameters = default
         photometry_cat[f] = photutils.SourceCatalog(img.data, segm_deblended, error = img.data_rms, kron_params = parameters['kron_params'], detection_cat = detection_cat)
     return photometry_cat
 
-def perform_photometry_method(self, photometry_columns = default_photometry_columns):
+def perform_photometry_method(self, imgs, photometry_columns = default_photometry_columns):
+
+    self.imgs = imgs
 
     self.photometry_cat = perform_photometry(self.detection_cat, self.segm_deblended, self.imgs, parameters = self.parameters)
 
@@ -107,8 +110,14 @@ def perform_photometry_method(self, photometry_columns = default_photometry_colu
 
         # --- convert to nJy
         for phot_type in ['segment', 'kron']:
-            self.o[f'{f}/{phot_type}_flux'] /=  self.imgs[f].nJy_to_es
-            self.o[f'{f}/{phot_type}_fluxerr'] /=  self.imgs[f].nJy_to_es
+
+            if self.imgs[f].units == 'e/s':
+
+                nJy_to_es = (1E-9*10**(0.4*(self.imgs[f].zeropoint-8.9)))
+
+                self.o[f'{f}/{phot_type}_flux'] /=  nJy_to_es
+                self.o[f'{f}/{phot_type}_fluxerr'] /=  nJy_to_es
+
 
 
 
@@ -141,17 +150,17 @@ class SEP():
     perform_aperture_photometry = perform_aperture_photometry_method
 
 
-    def __init__(self, detection_image, imgs, verbose = False, output_dir = None, parameters = default_parameters):
+    def __init__(self, verbose = False, output_dir = None, parameters = default_parameters):
 
-        self.detection_image = detection_image
-        self.imgs = imgs
+        # self.detection_image = detection_image
+        # self.imgs = imgs
         self.verbose = verbose
-        self.filters = list(self.imgs.keys())
+        # self.filters = list(self.imgs.keys())
         self.parameters = parameters
 
         if self.verbose:
-            print('-'*20)
-            print('list of filters:', self.filters)
+            # print('-'*20)
+            # print('list of filters:', self.filters)
             print('-'*20)
             for k,v in self.parameters.items():
                 print(k, v)
@@ -159,6 +168,13 @@ class SEP():
         # --- output directory
         self.output_dir = output_dir
         self.o = {}
+
+    def run(self, detection_image, imgs):
+
+        self.detect_sources(detection_image)
+        self.perform_photometry(imgs)
+        # self.perform_aperture_photometry(imgs)
+        self.export_to_hdf5()
 
 
     # --- Export to Astropy tables
@@ -223,11 +239,3 @@ class SEP():
             return hf
         else:
             hf.flush()
-
-
-    def run_default(self):
-
-        self.detect_sources()
-        self.perform_photometry()
-        self.perform_aperture_photometry()
-        self.export_to_hdf5()

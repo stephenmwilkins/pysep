@@ -44,9 +44,9 @@ detection_image = imgs['f160w'] # simply use the f160w band
 
 # --- initialise SEP, this keeps everything together and provides handy output methods
 
-SEP = sep.SEP(detection_image, imgs, verbose = True) # you could at this point change the default parameters
+SEP = sep.SEP(verbose = True) # you could at this point change the default parameters
 
-SEP.detect_sources() # detect sources
+SEP.detect_sources(detection_image) # detect sources
 
 
 # for i in range(SEP.N):

@@ -4,17 +4,54 @@
 import numpy as np
 
 from astropy.io import fits
+import astropy.wcs as wcs
+import astropy.units as u
+from astropy.visualization import make_lupton_rgb, SqrtStretch, LogStretch, hist, simple_norm
+from astropy.visualization.mpl_normalize import ImageNormalize
+from astropy.convolution import Gaussian2DKernel
+from astropy.stats import gaussian_fwhm_to_sigma
+from astropy.coordinates import SkyCoord
 
-from photutils import Background2D, MedianBackground
+
+from photutils import Background2D, MedianBackground, detect_sources, deblend_sources
+from photutils.utils import calc_total_error
 
 # from photutils import CircularAperture
 # from photutils import aperture_photometry
 
+from photutils.psf.matching import resize_psf, create_matching_kernel, CosineBellWindow
+from astropy.convolution import convolve, convolve_fft # , Gaussian2DKernel, Tophat2DKernel
+
+from scipy import ndimage
+
+from inspect import signature
 
 
+JWST_flux_units = u.MJy / u.sr
+
+output_properties = 'label xcentroid ycentroid sky_centroid area semimajor_sigma semiminor_sigma'.split()
+output_properties += 'fwhm ellipticity orientation gini'.split()
+output_properties += 'kron_radius local_background segment_flux segment_fluxerr kron_flux kron_fluxerr'.split()
 
 
-class empty: pass
+def fluxes2mags(flux, fluxerr):
+    nondet = flux < 0  # Non-detection if flux is negative
+    unobs = (fluxerr <= 0) + (fluxerr == np.inf)  # Unobserved if flux uncertainty is negative or infinity
+
+    mag = flux.to(u.ABmag)
+    magupperlimit = fluxerr.to(u.ABmag) # 1-sigma upper limit if flux=0
+
+    mag = np.where(nondet, 99 * u.ABmag, mag)
+    mag = np.where(unobs, -99 * u.ABmag, mag)
+
+    magerr = 2.5 * np.log10(1 + fluxerr/flux)
+    magerr = magerr.value * u.ABmag
+
+    magerr = np.where(nondet, magupperlimit, magerr)
+    magerr = np.where(unobs, 0 * u.ABmag, magerr)
+
+    return mag, magerr
+
 
 def make_cutout(data, x, y, width):
 
@@ -57,24 +94,100 @@ def make_cutout(data, x, y, width):
 
 class Image:
 
-    def measure_background_and_rms(self):
+    def measure_background_map(self, bkg_size=50, filter_size=3, verbose=True):
+        # Calculate sigma-clipped background in cells of 50x50 pixels, then median filter over 3x3 cells
+        # For best results, the image should span an integer number of cells in both dimensions (e.g., 1000=20x50 pixels)
+        # https://photutils.readthedocs.io/en/stable/background.html
+        self.background_map = Background2D(self.data, bkg_size, filter_size=filter_size)
+        self.bkg = self.background_map.background
+        self.bkg_rms = self.background_map.background_rms
 
-        self.measure_background_map()
+    def smooth_data(self, smooth_fwhm=2, kernel_size=5):
+        # convolve data with Gaussian
+        # convolved_data used for source detection and to calculate source centroids and morphological properties
+        smooth_sigma = smooth_fwhm * gaussian_fwhm_to_sigma
+        self.smooth_kernel = Gaussian2DKernel(smooth_sigma, x_size=kernel_size, y_size=kernel_size)
+        self.smooth_kernel.normalize()
+        self.convolved_data = convolve(self.data, self.smooth_kernel)
 
-        self.background_rms = 1 / np.sqrt(self.wht)
 
-        if self.exposure_time:
+    def detect_sources(self, nsigma, npixels, smooth_fwhm=2, kernel_size=5, deblend_levels=32, deblend_contrast=0.005):
 
-            self.exposure_time_map = self.exposure_time * self.background_map.background_rms_median**2 * self.wht
+        # Set detection threshold map as nsigma times RMS above background pedestal
+        detection_threshold = (nsigma * self.bkg_rms) + self.bkg
+        # detection_threshold = (nsigma * self.background_map.background_rms)/self.wht + self.background_map.background
 
-            # effective gain parameter required to be positive everywhere (not zero), so adding small value 1e-8
-            self.data_rms = calc_total_error(self.data, self.background_rms, self.exposure_time_map+1e-8)
+        # Before detection, convolve data with Gaussian
+        self.smooth_data(smooth_fwhm, kernel_size)
 
-        else:
+        # Detect sources with npixels connected pixels at/above threshold in data smoothed by kernel
+        # https://photutils.readthedocs.io/en/stable/segmentation.html
+        self.segm_detect = detect_sources(self.data, detection_threshold, npixels=npixels, kernel=self.smooth_kernel)
 
-            print('WARNING: Using naive data_rms calculation')
-            self.data_rms = self.background_rms
+        # Deblend: separate connected/overlapping sources
+        # https://photutils.readthedocs.io/en/stable/segmentation.html#source-deblending
+        self.segm_deblend = deblend_sources(self.data, self.segm_detect, npixels=npixels, kernel=self.smooth_kernel, nlevels=deblend_levels, contrast=deblend_contrast)
 
+        if self.verbose:
+            print(len(self.segm_detect.labels))
+
+
+    def measure_source_properties(self, local_background_width=24, properties=output_properties):
+        if version.parse(photutils.__version__) >= version.parse("1.4.0"):
+            self.catalog = SourceCatalog(self.data-self.background_map.background, self.segm_deblend,
+                                         convolved_data=self.convolved_data,  # photutils 1.4
+                                         error=self.data_error, mask=self.data_mask,
+                                         background=self.background_map.background, wcs=self.imwcs,
+                                         localbkg_width=local_background_width)
+        else:  # use filter_kernel instead of convolved_data
+            self.catalog = SourceCatalog(self.data-self.background_map.background, self.segm_deblend,
+                                         kernel=self.smooth_kernel,  # photutils < 1.4
+                                         error=self.data_error, mask=self.data_mask,
+                                         background=self.background_map.background, wcs=self.imwcs,
+                                         localbkg_width=local_background_width)
+
+
+        self.catalog_table = self.catalog.to_table(columns=properties)  # properties: quantities to keep
+
+        # Convert fluxes to nJy units and to AB magnitudes
+        for aperture in ['segment', 'kron']:
+            flux    = self.catalog_table[aperture+'_flux']    * self.flux_units.to(u.nJy)
+            fluxerr = self.catalog_table[aperture+'_fluxerr'] * self.flux_units.to(u.nJy)
+            mag, magerr = fluxes2mags(flux, fluxerr)
+
+            self.catalog_table[aperture+'_flux']    = flux
+            self.catalog_table[aperture+'_fluxerr'] = fluxerr
+            self.catalog_table[aperture+'_mag']     = mag
+            self.catalog_table[aperture+'_magerr']  = magerr
+
+
+
+    # def measure_background_and_rms(self):
+    #
+    #     self.measure_background_map()
+    #
+    #     self.background_rms = 1 / np.sqrt(self.wht)
+    #
+    #     if self.exptime:
+    #
+    #         self.exposure_time_map = self.exptime * self.background_map.background_rms_median**2 * self.wht
+    #
+    #         # effective gain parameter required to be positive everywhere (not zero), so adding small value 1e-8
+    #         self.data_rms = calc_total_error(self.data, self.background_rms, self.exposure_time_map+1e-8)
+    #
+    #     else:
+    #
+    #         print('WARNING: Using naive data_rms calculation')
+    #         self.data_rms = self.background_rms
+
+
+    def get_rms(self):
+
+        return self.data/self.data_rms
+
+    def measure_rms(self):
+
+        self.rms = self.get_rms()
 
 
     def sn(self):
@@ -98,18 +211,17 @@ class Image:
 
 
     def get_area(self):
-
         """calculated non-masked area in units of arcmin2"""
-
         return self.data.count()*self.pixel_scale**2/3600.
 
-
-    def make_cutout(self, x, y, width, calculate_background = True):
-
+    def make_cutout(self, x, y, width, extensions = ['sci', 'err', 'wht', 'bkg', 'bkg_rms']):
         """extract cut out"""
 
-        data = np.zeros((width, width))
-        wht = np.zeros((width, width))
+        if 'err' in extensions: err = np.zeros((width, width))
+        if 'sci' in extensions: data = np.zeros((width, width))
+        if 'wht' in extensions: wht = np.zeros((width, width))
+        if 'bkg' in extensions: bkg = np.zeros((width, width))
+        if 'bkg_rms' in extensions: bkg_rms = np.zeros((width, width))
 
         x = int(np.round(x, 0))
         y = int(np.round(y, 0))
@@ -148,9 +260,12 @@ class Image:
             ymax += 1
 
         data[xstart:xend,ystart:yend] = self.data[xmin:xmax,ymin:ymax]
-        wht[xstart:xend,ystart:yend] = self.wht[xmin:xmax,ymin:ymax]
+        if 'err' in extensions: err[xstart:xend,ystart:yend] = self.err[xmin:xmax,ymin:ymax]
+        if 'wht' in extensions: wht[xstart:xend,ystart:yend] = self.wht[xmin:xmax,ymin:ymax]
+        if 'bkg' in extensions: bkg[xstart:xend,ystart:yend] = self.bkg[xmin:xmax,ymin:ymax]
+        if 'bkg_rms' in extensions: bkg_rms[xstart:xend,ystart:yend] = self.bkg_rms[xmin:xmax,ymin:ymax]
 
-        return ImageFromArrays(data, wht, self.pixel_scale, zeropoint = self.zeropoint, nJy_to_es = self.nJy_to_es, verbose = self.verbose, calculate_background = calculate_background)
+        return ImageFromArrays(data, err = err, wht = wht, bkg = bkg, bkg_rms = bkg_rms, pixel_scale = self.pixel_scale, verbose = self.verbose)
 
 
 
@@ -178,116 +293,118 @@ class Image:
         rms_hdu.writeto(f'{filename}data_rms.fits')
 
 
-    def measure_background_map(self, bkg_size=50, filter_size=3, verbose=True):
-        # Calculate sigma-clipped background in cells of 50x50 pixels, then median filter over 3x3 cells
-        # For best results, the image should span an integer number of cells in both dimensions (here, 1000=20x50 pixels)
-        # https://photutils.readthedocs.io/en/stable/background.html
-        self.background_map = Background2D(self.data, bkg_size, filter_size = filter_size)
+
+    def flux(self, zeropoint = None):
+
+        """ make flux image (not for photometry but for images) """
+
+        if zeropoint:
+            zp = zeropoint
+        else:
+            zp = self.zeropoint
+
+        if zp:
+
+            if self.units == 'e/s':
+
+                return self.data/( 1E-9 * 10**(0.4*(zp-8.9)))
+
+        else:
+            print('WARNING: no zeropoint set')
+            return
+
+
+    def flux_rms(self, zeropoint = None):
+
+        """ make flux image (not for photometry but for images) """
+
+        if zeropoint:
+            zp = zeropoint
+        else:
+            zp = self.zeropoint
+
+        if zp:
+
+            if self.units == 'e/s':
+
+                return self.data_rms/( 1E-9 * 10**(0.4*(zp-8.9)))
+
+        else:
+            print('WARNING: no zeropoint set')
+            return
 
 
 
-# --- designed to work with Steve's FLARE module. Omitted here.
-# def images_from_field(field, filters = None, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
-#
-#     # --- uses a flare.surveys field object to set the relevant parameters
-#
-#     if field.mask_file:
-#         mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
-#     else:
-#         mask = None
-#
-#     if not filters:
-#         filters = field.filters
-#
-#     return {filter: ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix) for filter in filters}
 
+class ImageFromMultiFITS(Image):
 
-
-# --- designed to work with Steve's FLARE module. Omitted here.
-# def image_from_field(filter, field, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht'):
-#
-#     # --- uses a flare.surveys field object to set the relevant parameters
-#
-#     if field.mask_file:
-#         mask = fits.getdata(f'{field.data_dir}/{field.mask_file}')
-#     else:
-#         mask = None
-#
-#     return ImageFromFile(field.data_dir, filter, mask = mask, pixel_scale = field.pixel_scale, verbose = verbose, sci_suffix = sci_suffix, wht_suffix = wht_suffix)
-
-
-
-# --- this class is used to read in an image from a FITS file
-
-class ImageFromFITS(Image):
-
-    def __init__(self, filename, filter = None, mask = None, pixel_scale = 0.06, verbose = False, sci_suffix = 'sci', wht_suffix = 'wht', zeropoint = None, nJy_to_es = None, exposure_time = None):
+    def __init__(self, filename, idata = {'sci': 1, 'err': 2, 'wht': 4}, mask = None, verbose = False, mask_edge_thickness=10):
 
         """generate instance of image class from file"""
 
         self.verbose = verbose
 
-        self.exposure_time = exposure_time
+        self.filename = filename
+        self.hdu = fits.open(filename)
+        self.header = self.hdu[0].header
+        self.imwcs = wcs.WCS(self.hdu[idata['sci']].header, self.hdu)
 
-        self.filter = filter
-        self.pixel_scale = pixel_scale
+        self.data = self.hdu[idata['sci']].data
+        self.err = self.hdu[idata['err']].data
+        self.wht = self.hdu[idata['wht']].data
 
-        # self.sci = fits.getdata(f'{data_dir}/{f}_{sci_suffix}.fits')
-        # self.wht = fits.getdata(f'{data_dir}/{f}_{wht_suffix}.fits')
+        self.bkg = np.empty(self.data.shape)
+        self.bkg_rms = np.empty(self.data.shape)
 
-        self.data = fits.getdata(f'{filename}_{sci_suffix}.fits')
-        self.wht = fits.getdata(f'{filename}_{wht_suffix}.fits')
+        # total error array (i.e., the background-only error plus Poisson noise due to individual sources)
+        # https://photutils.readthedocs.io/en/stable/segmentation.html#photometric-errors
+        #self.data_error = self.hdu[2].data  # 'ERR' i2d extension 2
+        self.err = fits.open(self.filename)[idata['err']].data
+        self.mask = np.isnan(self.err) # | (model.wht == 0)
 
+        # Remove edge detections: Grow the mask by 10 pixels
+        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.binary_dilation.html
+        self.mask = ndimage.binary_dilation(self.mask, iterations=mask_edge_thickness)
 
-        # --- define image zeropoint and/or conversion from nJy to electrons per second
+        # image_pixel_scale = np.abs(hdu[0].header['CD1_1']) * 3600
+        self.pixel_scale = wcs.utils.proj_plane_pixel_scales(self.imwcs)[0]
+        self.pixel_scale *= self.imwcs.wcs.cunit[0].to('arcsec')
 
-        if (zeropoint is None) and (nJy_to_es is None): print('WARNING: no zeropoint set. This is needed for photometry.')
+        # --- need to generalise
+        self.flux_units = JWST_flux_units * (self.pixel_scale * u.arcsec)**2
 
-        if zeropoint and (nJy_to_es is None):
-            nJy_to_es = 1E-9 * 10**(0.4*(zeropoint-8.9))
-
-        self.zeropoint = zeropoint # AB magnitude zeropoint
-        self.nJy_to_es = nJy_to_es # conversion from nJy to e/s
-
-        self.mask = mask
-
-        if type(mask) == np.ndarray:
-            self.mask = mask
-        else:
-            self.mask = (self.wht == 0)
-
-        self.data = np.ma.masked_array(self.data, mask = self.mask)
-        self.wht = np.ma.masked_array(self.wht, mask = self.mask)
-
-        if verbose:
-            print(f'shape: ', self.data.shape)
-
-        self.measure_background_and_rms()
+        if self.verbose:
+            print(self.filename)
+            ny, nx = self.data.shape
+            outline = '%d x %d pixels' % (ny, nx)
+            outline += ' = %g" x %g"' % (ny * self.pixel_scale, nx * self.pixel_scale)
+            outline += ' (%.2f" / pixel)' % self.pixel_scale
+            print(outline)
 
 
 
-# --- this class is used to read in an image from a FITS file
 
 
 class ImageFromArrays(Image):
 
-    def __init__(self, data, wht, pixel_scale, zeropoint = False, nJy_to_es = False,  verbose = False, exposure_time = None, calculate_background = True):
+    def __init__(self, data, err = None, wht = None, bkg = None, bkg_rms = None, pixel_scale = None, verbose = True):
 
         """generate instance of image class from cutout"""
 
+        print('here')
+
         self.verbose = verbose
 
-        self.exposure_time = exposure_time
-
         self.pixel_scale = pixel_scale
-        self.zeropoint = zeropoint # AB magnitude zeropoint
-        self.nJy_to_es = nJy_to_es # conversion from nJy to e/s
-
         self.data = data
+        self.err = err
         self.wht = wht
+        self.bkg = bkg
+        self.bkg_rms = bkg_rms
 
-        if calculate_background:
-            self.measure_background_and_rms()
+        # for im in [self.data, self.wht, self.bkg, self.bkg_rms]:
+        #     print(im.shape, np.median(im), np.mean(im), np.std(im), im.dtype)
+
 
 
 
